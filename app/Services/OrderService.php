@@ -92,7 +92,9 @@ class OrderService
     public function changeStatus(Order $order, OrderStatus $status): Order
     {
         return DB::transaction(function () use ($order, $status) {
-            $order->refresh();
+            $order = Order::whereKey($order->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
 
             if ($order->status === $status) {
                 return $order;
@@ -394,15 +396,29 @@ class OrderService
             return;
         }
 
-        $product = Product::whereKey($productId)->lockForUpdate()->first();
+        $product = Product::whereKey($productId)
+            ->lockForUpdate()
+            ->first();
 
         if (! $product) {
+            if ($delta < 0) {
+                throw ValidationException::withMessages([
+                    'status' => 'Impossible de reactiver cette commande : un produit a ete retire du catalogue.',
+                ]);
+            }
+
             return;
         }
 
-        // Le stock ne peut pas devenir negatif : si le produit a ete remis a
-        // zero entre-temps, on se contente de descendre a 0.
-        $product->stock = max(0, $product->stock + $delta);
+        $newStock = $product->stock + $delta;
+
+        if ($newStock < 0) {
+            throw ValidationException::withMessages([
+                'status' => "Stock insuffisant pour \"{$product->name}\" : {$product->stock} disponible(s), ".abs($delta).' necessaire(s).',
+            ]);
+        }
+
+        $product->stock = $newStock;
         $product->save();
     }
 }

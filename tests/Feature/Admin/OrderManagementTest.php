@@ -206,4 +206,72 @@ class OrderManagementTest extends TestCase
                 && $series->last()['orders'] === 1)
             ->assertViewHas('statusBreakdown', fn (Collection $breakdown) => $breakdown->count() === 5);
     }
+
+    public function test_reactivation_is_refused_when_stock_is_insufficient(): void
+    {
+        [$order, $product] = $this->placeOrder(stock: 10, quantity: 3);
+
+        app(OrderService::class)->changeStatus($order, OrderStatus::Cancelled);
+
+        $product->refresh()->update(['stock' => 2]);
+        $releasedAt = $order->fresh()->stock_released_at->toDateTimeString();
+
+        Livewire::actingAs($this->admin)
+            ->test(Show::class, ['order' => $order->fresh()])
+            ->call('updateStatus', 'confirmed')
+            ->assertHasErrors('status');
+
+        $this->assertSame(2, $product->fresh()->stock);
+        $this->assertSame(OrderStatus::Cancelled, $order->fresh()->status);
+        $this->assertSame(
+            $releasedAt,
+            $order->fresh()->stock_released_at->toDateTimeString(),
+        );
+        $this->assertNull($order->fresh()->confirmed_at);
+    }
+
+    public function test_cancellation_with_stale_order_does_not_release_stock_twice(): void
+    {
+        [$order, $product] = $this->placeOrder(stock: 10, quantity: 3);
+
+        $staleOrder = $order->fresh();
+
+        app(OrderService::class)->changeStatus($order, OrderStatus::Cancelled);
+        app(OrderService::class)->changeStatus($staleOrder, OrderStatus::Cancelled);
+
+        $this->assertSame(10, $product->fresh()->stock);
+        $this->assertSame(OrderStatus::Cancelled, $order->fresh()->status);
+        $this->assertNotNull($order->fresh()->stock_released_at);
+    }
+
+    public function test_failed_reactivation_rolls_back_all_stock_changes(): void
+    {
+        $first = Product::factory()->stock(10)->price(1000)->create();
+        $second = Product::factory()->stock(10)->price(1000)->create();
+
+        $cart = app(CartService::class);
+        $cart->addProduct($first, 3);
+        $cart->addProduct($second, 3);
+
+        $orders = app(OrderService::class);
+        $order = $orders->place([
+            'customer_name' => 'Jean Mbarga',
+            'customer_phone' => '699000000',
+            'customer_address' => 'Yaounde',
+        ]);
+
+        $orders->changeStatus($order, OrderStatus::Cancelled);
+
+        $second->refresh()->update(['stock' => 2]);
+
+        Livewire::actingAs($this->admin)
+            ->test(Show::class, ['order' => $order->fresh()])
+            ->call('updateStatus', 'confirmed')
+            ->assertHasErrors('status');
+
+        $this->assertSame(10, $first->fresh()->stock);
+        $this->assertSame(2, $second->fresh()->stock);
+        $this->assertSame(OrderStatus::Cancelled, $order->fresh()->status);
+        $this->assertNotNull($order->fresh()->stock_released_at);
+    }
 }
