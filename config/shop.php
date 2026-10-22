@@ -59,6 +59,7 @@ return [
     'low_stock_threshold' => (int) env('SHOP_LOW_STOCK_THRESHOLD', 5),
 
     'max_line_quantity' => (int) env('SHOP_MAX_LINE_QUANTITY', 99),
+    'pending_order_expiration_hours' => (int) env('SHOP_PENDING_ORDER_EXPIRATION_HOURS', 48),
 
     /*
     |--------------------------------------------------------------------------
