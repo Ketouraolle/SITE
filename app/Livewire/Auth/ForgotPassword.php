@@ -4,6 +4,7 @@ namespace App\Livewire\Auth;
 
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Facades\Password;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Validation\ValidationException;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
@@ -25,21 +26,27 @@ class ForgotPassword extends Component
      */
     public function sendResetLink(): void
     {
+        $this->status = null;
+        $this->email = trim($this->email);
+
         $this->validate([
-            'email' => ['required', 'email'],
+            'email' => ['required', 'email', 'max:254'],
         ]);
 
-        $this->status = null;
+        $key = 'password-reset:'.request()->ip();
 
-        $status = Password::sendResetLink(['email' => $this->email]);
-
-        if ($status !== Password::RESET_LINK_SENT) {
+        if (RateLimiter::tooManyAttempts($key, 5)) {
             throw ValidationException::withMessages([
-                'email' => [trans($status)],
+                'email' => 'Trop de tentatives. Reessayez dans '
+                    .RateLimiter::availableIn($key).' seconde(s).',
             ]);
         }
 
-        $this->status = __($status);
+        RateLimiter::hit($key, 60);
+
+        Password::sendResetLink(['email' => $this->email]);
+
+        $this->status = 'Si un compte correspond a cette adresse, un lien de reinitialisation vous sera envoye.';
     }
 
     public function render(): View

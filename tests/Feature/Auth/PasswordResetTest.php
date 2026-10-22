@@ -9,6 +9,7 @@ use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\RateLimiter;
 use Livewire\Livewire;
 use Tests\TestCase;
 
@@ -33,7 +34,10 @@ class PasswordResetTest extends TestCase
             ->set('email', $user->email)
             ->call('sendResetLink')
             ->assertHasNoErrors()
-            ->assertSet('status', __('passwords.sent'));
+            ->assertSet(
+                'status',
+                'Si un compte correspond a cette adresse, un lien de reinitialisation vous sera envoye.',
+            );
 
         Notification::assertSentTo($user, ResetPassword::class);
     }
@@ -84,5 +88,88 @@ class PasswordResetTest extends TestCase
 
             return true;
         });
+    }
+
+    public function test_unknown_email_receives_the_same_response(): void
+    {
+        Notification::fake();
+
+        $user = User::factory()->create();
+        $key = 'password-reset:127.0.0.1';
+
+        RateLimiter::clear($key);
+
+        try {
+            $this->withServerVariables([
+                'REMOTE_ADDR' => '127.0.0.1',
+            ]);
+
+            $component = Livewire::test(ForgotPassword::class);
+
+            $component
+                ->set('email', $user->email)
+                ->call('sendResetLink')
+                ->assertHasNoErrors();
+
+            $knownStatus = $component->get('status');
+
+            Notification::assertSentTo($user, ResetPassword::class);
+            Notification::fake();
+
+            $component
+                ->set('email', 'unknown@example.com')
+                ->call('sendResetLink')
+                ->assertHasNoErrors()
+                ->assertSet('status', $knownStatus);
+
+            Notification::assertNothingSent();
+        } finally {
+            RateLimiter::clear($key);
+        }
+    }
+
+    public function test_reset_requests_are_limited_per_ip_and_resume_after_one_minute(): void
+    {
+        Notification::fake();
+
+        $user = User::factory()->create();
+        $key = 'password-reset:127.0.0.1';
+
+        RateLimiter::clear($key);
+        $this->freezeTime();
+
+        try {
+            $this->withServerVariables([
+                'REMOTE_ADDR' => '127.0.0.1',
+            ]);
+
+            $component = Livewire::test(ForgotPassword::class);
+
+            for ($attempt = 0; $attempt < 5; $attempt++) {
+                $component
+                    ->set('email', "unknown{$attempt}@example.com")
+                    ->call('sendResetLink')
+                    ->assertHasNoErrors();
+            }
+
+            $component
+                ->set('email', $user->email)
+                ->call('sendResetLink')
+                ->assertHasErrors('email')
+                ->assertSet('status', null);
+
+            Notification::assertNothingSent();
+
+            $this->travel(61)->seconds();
+
+            $component
+                ->call('sendResetLink')
+                ->assertHasNoErrors();
+
+            Notification::assertSentTo($user, ResetPassword::class);
+        } finally {
+            RateLimiter::clear($key);
+            $this->travelBack();
+        }
     }
 }
